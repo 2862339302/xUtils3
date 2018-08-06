@@ -43,9 +43,8 @@ public final class LruDiskCache {
     private long diskCacheSize = LIMIT_SIZE;
     private final Executor trimExecutor = new PriorityExecutor(1, true);
 
-    // delete expires
-    private long lastDeleteExpiryTime = 0L;
-    private static final long DELETE_EXPIRY_SPAN = 1000;
+    private long lastTrimTime = 0L;
+    private static final long TRIM_TIME_SPAN = 1000;
 
     public synchronized static LruDiskCache getDiskCache(String dirName) {
         if (TextUtils.isEmpty(dirName)) dirName = CACHE_DIR_NAME;
@@ -89,20 +88,28 @@ public final class LruDiskCache {
             LogUtil.e(ex.getMessage(), ex);
         }
 
-        // update hint & lastAccess...
         if (result != null) {
 
             if (result.getExpires() < System.currentTimeMillis()) {
                 return null;
             }
 
-            result.setHits(result.getHits() + 1);
-            result.setLastAccess(System.currentTimeMillis());
-            try {
-                this.cacheDb.update(result, "hits", "lastAccess");
-            } catch (Throwable ex) {
-                LogUtil.e(ex.getMessage(), ex);
+            { // update hint & lastAccess...
+                final DiskCacheEntity finalResult = result;
+                trimExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        finalResult.setHits(finalResult.getHits() + 1);
+                        finalResult.setLastAccess(System.currentTimeMillis());
+                        try {
+                            cacheDb.update(finalResult, "hits", "lastAccess");
+                        } catch (Throwable ex) {
+                            LogUtil.e(ex.getMessage(), ex);
+                        }
+                    }
+                });
             }
+
         }
 
         return result;
@@ -125,7 +132,7 @@ public final class LruDiskCache {
         trimSize();
     }
 
-    public DiskCacheFile getDiskCacheFile(String key) {
+    public DiskCacheFile getDiskCacheFile(String key) throws InterruptedException {
         if (!available || TextUtils.isEmpty(key)) {
             return null;
         }
@@ -215,6 +222,9 @@ public final class LruDiskCache {
                 } else {
                     throw new FileLockedException(destPath);
                 }
+            } catch (InterruptedException ex) {
+                result = cacheFile;
+                LogUtil.e(ex.getMessage(), ex);
             } finally {
                 if (result == null) {
                     result = cacheFile;
@@ -239,6 +249,13 @@ public final class LruDiskCache {
             public void run() {
                 if (available) {
 
+                    long current = System.currentTimeMillis();
+                    if (current - lastTrimTime < TRIM_TIME_SPAN) {
+                        return;
+                    } else {
+                        lastTrimTime = current;
+                    }
+
                     // trim expires
                     deleteExpiry();
 
@@ -252,13 +269,17 @@ public final class LruDiskCache {
                             if (rmList != null && rmList.size() > 0) {
                                 // delete cache files
                                 for (DiskCacheEntity entity : rmList) {
-                                    String path = entity.getPath();
-                                    if (!TextUtils.isEmpty(path)) {
-                                        if (deleteFileWithLock(path)
-                                                && deleteFileWithLock(path + TEMP_FILE_SUFFIX)) {
-                                            // delete db entity
-                                            cacheDb.delete(entity);
+                                    try {
+                                        // delete db entity
+                                        cacheDb.delete(entity);
+                                        // delete cache files
+                                        String path = entity.getPath();
+                                        if (!TextUtils.isEmpty(path)) {
+                                            deleteFileWithLock(path);
+                                            deleteFileWithLock(path + TEMP_FILE_SUFFIX);
                                         }
+                                    } catch (DbException ex) {
+                                        LogUtil.e(ex.getMessage(), ex);
                                     }
                                 }
 
@@ -276,13 +297,17 @@ public final class LruDiskCache {
                             if (rmList != null && rmList.size() > 0) {
                                 // delete cache files
                                 for (DiskCacheEntity entity : rmList) {
-                                    String path = entity.getPath();
-                                    if (!TextUtils.isEmpty(path)) {
-                                        if (deleteFileWithLock(path)
-                                                && deleteFileWithLock(path + TEMP_FILE_SUFFIX)) {
-                                            // delete db entity
-                                            cacheDb.delete(entity);
+                                    try {
+                                        // delete db entity
+                                        cacheDb.delete(entity);
+                                        // delete cache files
+                                        String path = entity.getPath();
+                                        if (!TextUtils.isEmpty(path)) {
+                                            deleteFileWithLock(path);
+                                            deleteFileWithLock(path + TEMP_FILE_SUFFIX);
                                         }
+                                    } catch (DbException ex) {
+                                        LogUtil.e(ex.getMessage(), ex);
                                     }
                                 }
                             }
@@ -296,13 +321,6 @@ public final class LruDiskCache {
     }
 
     private void deleteExpiry() {
-        long current = System.currentTimeMillis();
-        if (current - lastDeleteExpiryTime < DELETE_EXPIRY_SPAN) {
-            return;
-        } else {
-            lastDeleteExpiryTime = current;
-        }
-
         try {
             WhereBuilder whereBuilder = WhereBuilder.b("expires", "<", System.currentTimeMillis());
             List<DiskCacheEntity> rmList = cacheDb.selector(DiskCacheEntity.class).where(whereBuilder).findAll();

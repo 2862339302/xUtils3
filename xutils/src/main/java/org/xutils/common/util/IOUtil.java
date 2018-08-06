@@ -26,6 +26,7 @@ public class IOUtil {
             try {
                 closeable.close();
             } catch (Throwable ignored) {
+                LogUtil.d(ignored.getMessage(), ignored);
             }
         }
     }
@@ -35,6 +36,7 @@ public class IOUtil {
             try {
                 cursor.close();
             } catch (Throwable ignored) {
+                LogUtil.d(ignored.getMessage(), ignored);
             }
         }
     }
@@ -51,29 +53,25 @@ public class IOUtil {
             while ((len = in.read(buf)) != -1) {
                 out.write(buf, 0, len);
             }
+            return out.toByteArray();
         } finally {
             closeQuietly(out);
         }
-        return out.toByteArray();
     }
 
-    public static byte[] readBytes(InputStream in, long skip, long size) throws IOException {
-        ByteArrayOutputStream out = null;
-        try {
-            if (skip > 0) {
-                long skipSize = 0;
-                while (skip > 0 && (skipSize = in.skip(skip)) > 0) {
-                    skip -= skipSize;
-                }
+    public static byte[] readBytes(InputStream in, long skip, int size) throws IOException {
+        byte[] result = null;
+        if (skip > 0) {
+            long skipped = 0;
+            while (skip > 0 && (skipped = in.skip(skip)) > 0) {
+                skip -= skipped;
             }
-            out = new ByteArrayOutputStream();
-            for (int i = 0; i < size; i++) {
-                out.write(in.read());
-            }
-        } finally {
-            closeQuietly(out);
         }
-        return out.toByteArray();
+        result = new byte[size];
+        for (int i = 0; i < size; i++) {
+            result[i] = (byte) in.read();
+        }
+        return result;
     }
 
     public static String readStr(InputStream in) throws IOException {
@@ -93,7 +91,7 @@ public class IOUtil {
         while ((len = reader.read(buf)) >= 0) {
             sb.append(buf, 0, len);
         }
-        return sb.toString().trim();
+        return sb.toString();
     }
 
     public static void writeStr(OutputStream out, String str) throws IOException {
